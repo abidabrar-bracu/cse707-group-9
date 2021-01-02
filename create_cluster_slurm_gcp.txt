@@ -1,0 +1,142 @@
+================================================================================================================================================
+CREATE VM AND ENABLE SSH
+================================================================================================================================================
+Step 0: Create a VM (easy). I prefer Ubuntu. (https://cloud.google.com/compute/docs/quickstart-linux)
+Step 1: Connect via using default browser SSH/gcloud based SSH (https://cloud.google.com/compute/docs/instances/connecting-advanced#provide-key)
+Step 2: Install python and other necessary libraries (I installed anaconda,
+        https://www.digitalocean.com/community/tutorials/how-to-install-anaconda-on-ubuntu-18-04-quickstart)
+Step 3: Create a snapshot of this VM (https://cloud.google.com/compute/docs/disks/create-snapshots). Make sure they have same name format
+        for example, vm-0, vm-1, etc.
+Step 4: Create copy of this VM using this snapshot (https://cloud.google.com/compute/docs/ip-addresses/reserve-static-internal-ip-address)
+Step 5: Assign static internal IP addresses for all of the VMs
+Step 5: Create SSH public-private key using ssh-keygen (https://cloud.google.com/compute/docs/instances/adding-removing-ssh-keys#createsshkeys)
+Step 6: Add the public key to all of the VMs (https://cloud.google.com/compute/docs/instances/adding-removing-ssh-keys#locatesshkeys)
+Step 7: Copy the private key to all of the VMs (set it as default ssh private key, id_rsa), make sure to set proper chmod
+Step 8: Check if you can SSH to other VMs from one VM
+Step 9: (Optional) Edit the /etc/hosts files in all of the VMs to add the ip-address and hostname of other VMs 
+        (https://glmdev.medium.com/building-a-raspberry-pi-cluster-784f0df9afbd - Section 5.1)
+
+================================================================================================================================================
+ADDING NETWORK-ATTACHED STORAGE (NAS) FOR SHARED FILES
+================================================================================================================================================
+Step 1: Create a new instance of the Filestore. 1 TB HDD should be more than enough (https://cloud.google.com/filestore)
+Step 2: Mount the Filestore NAS to all of the VMs (https://cloud.google.com/filestore/docs/mounting-fileshares)
+Step 3: Make sure you attach to common path on all of the VMs, for example /mnt/sharedfs
+
+# NOTE: FROM HERE ON, THE NAS STORAGE PATH WILL BE DENOTED BY /mnt/sharedfs
+
+================================================================================================================================================
+INSTALLING SLURM
+================================================================================================================================================
+Step 1: sudo apt install ntpdate -y (We’ll install the ntpdate package to periodically sync the system time in the background.)
+Step 2: Install SLURM controller package on master node (node0): sudo apt install slurm-wlm -y
+Step 3: use the default SLURM configuration file as a base. Copy it over and edit
+cd /etc/slurm-llnl
+sudo cp /usr/share/doc/slurm-client/examples/slurm.conf.simple.gz .
+sudo gzip -d slurm.conf.simple.gz
+sudo mv slurm.conf.simple slurm.conf
+sudo nano /etc/slurm-llnl/slurm.conf
+
+Step 4: Edit (add/change) the follwing lines
+
+ControlMachine=node0
+ControlAddr=10.128.0.8
+# replace with your master's host name and IP address. make sure IP is static
+SelectType=select/cons_res
+SelectTypeParameters=CR_Core
+ClusterName=cluster
+NodeName=node0 NodeAddr=10.128.0.8 CPUs=2 State=UNKNOWN
+NodeName=node1 NodeAddr=10.128.0.9 CPUs=2 State=UNKNOWN
+NodeName=node2 NodeAddr=10.128.0.12 CPUs=2 State=UNKNOWN
+NodeName=node3 NodeAddr=10.128.0.13 CPUs=2 State=UNKNOWN
+PartitionName=cluster Nodes=node[1-3] Default=Yes MaxTime=INFINITE State=UP
+# Replace with the IP addresses of your compute nodes, and number of CPUs
+
+Step 5: sudo nano /etc/slurm-llnl/cgroup.conf
+CgroupMountpoint="/sys/fs/cgroup"
+CgroupAutomount=yes
+CgroupReleaseAgentDir="/etc/slurm-llnl/cgroup"
+AllowedDevicesFile="/etc/slurm-llnl/cgroup_allowed_devices_file.conf"
+ConstrainCores=no
+TaskAffinity=no
+ConstrainRAMSpace=yes
+ConstrainSwapSpace=no
+ConstrainDevices=no
+AllowedRamSpace=100
+AllowedSwapSpace=0
+MaxRAMPercent=100
+MaxSwapPercent=100
+MinRAMSpace=30
+
+Step 6: sudo nano /etc/slurm-llnl/cgroup_allowed_devices_file.conf
+/dev/null
+/dev/urandom
+/dev/zero
+/dev/sda*
+/dev/cpu/*/*
+/dev/pts/*
+/mnt/sharedfs*
+
+Step 7: Copy the Configuration Files to Shared Storage
+cd /etc/slurm-llnl/   
+sudo cp slurm.conf cgroup.conf cgroup_allowed_devices_file.conf /mnt/sharedfs
+sudo cp /etc/munge/munge.key /mnt/sharedfs
+
+Step 8: Start Munge
+LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+sudo systemctl enable munge
+sudo systemctl start munge
+
+Step 9: Start SLURM Daemon
+LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+sudo systemctl enable slurmd
+sudo systemctl start slurmd
+
+Step 10: Start SLURM control daemon
+LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+sudo systemctl enable slurmctld
+sudo systemctl start slurmctld
+
+Step 11: sudo reboot
+
+# THE FOLLOWING STEPS IS TO BE REPEATED FOR ALL OF THE NODES
+Step 12: Install slurm client 
+sudo apt install slurmd slurm-client -y
+
+Step 13: Copy the configuration files
+sudo cp /mnt/sharedfs/munge.key /etc/munge/munge.key
+sudo cp /mnt/sharedfs/slurm.conf /etc/slurm-llnl/slurm.conf
+sudo cp /mnt/sharedfs/cgroup* /etc/slurm-llnl
+
+Step 14: Enable and start Munge.
+LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+sudo systemctl enable munge
+sudo systemctl start munge
+
+Step 15: sudo reboot
+Step 16: Check munuge. If not SUCCESS (0), reboot again
+ssh pi@node01 munge -n | unmunge
+
+Step 17: Start the SLURM Daemon
+sudo systemctl enable slurmd
+sudo systemctl start slurmd
+
+# NOW GO BACK TO MASTER
+Step 18: sinfo
+if any node is down, 
+sudo scontrol update NodeName=<node_name> State=RESUME
+to check if down:
+scontrol show node <node_name>
+
+if does not work, reboot all, start slurm daemon in all node, start slurm controller in master, update node state
+
+Step 19: Test if slurm workd
+srun --nodes=3 hostname
+
+DONE!!! :D
+
+
